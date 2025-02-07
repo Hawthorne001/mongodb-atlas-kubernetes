@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.mongodb.org/atlas-sdk/v20231115008/admin"
+	adminv20241113001 "go.mongodb.org/atlas-sdk/v20241113001/admin"
 	"go.uber.org/zap"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,9 +42,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	ctrzap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/atlas"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/operator"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/atlas"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/operator"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/control"
 )
 
@@ -62,8 +63,9 @@ var (
 	testEnv *envtest.Environment
 
 	// These variables are initialized once per each node
-	k8sClient   client.Client
-	atlasClient *admin.APIClient
+	k8sClient               client.Client
+	atlasClient             *admin.APIClient
+	atlasClientv20241113001 *adminv20241113001.APIClient
 
 	// These variables are per each test and are changed by each BeforeRun
 	namespace         corev1.Namespace
@@ -144,6 +146,13 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 		atlasClient, err = atlas.NewClient(atlasDomain, publicKey, privateKey)
 		Expect(err).ToNot(HaveOccurred())
+
+		atlasClientv20241113001, err = adminv20241113001.NewClient(
+			adminv20241113001.UseBaseURL(atlasDomain),
+			adminv20241113001.UseDigestAuth(publicKey, privateKey),
+		)
+		Expect(err).ToNot(HaveOccurred())
+
 		defaultTimeouts()
 	})
 })
@@ -153,6 +162,10 @@ var _ = SynchronizedAfterSuite(func() {}, func() {
 		err := testEnv.Stop()
 		Expect(err).ToNot(HaveOccurred())
 	})
+})
+
+var _ = ReportAfterSuite("Ensure test suite was not empty", func(r Report) {
+	Expect(r.PreRunStats.SpecsThatWillRun > 0).To(BeTrue(), "Suite must run at least 1 test")
 })
 
 func defaultTimeouts() {
@@ -184,7 +197,7 @@ func prepareControllers(deletionProtection bool) (*corev1.Namespace, context.Can
 	// shallow copy global config
 	managerCfg := *cfg
 	managerCfg.UserAgent = "AKO"
-	mgr, err := operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), scheme.Scheme).
+	mgr, err := operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), scheme.Scheme, 5*time.Minute).
 		WithConfig(&managerCfg).
 		WithNamespaces(namespace.Name).
 		WithLogger(logger).
@@ -192,6 +205,7 @@ func prepareControllers(deletionProtection bool) (*corev1.Namespace, context.Can
 		WithSyncPeriod(30 * time.Minute).
 		WithAPISecret(client.ObjectKey{Name: "atlas-operator-api-key", Namespace: namespace.Name}).
 		WithDeletionProtection(deletionProtection).
+		WithSkipNameValidation(true). // this is needed as this starts multiple controllers concurrently
 		Build(ctx)
 	Expect(err).ToNot(HaveOccurred())
 
@@ -224,7 +238,7 @@ func prepareControllersWithSyncPeriod(deletionProtection bool, syncPeriod time.D
 	// shallow copy global config
 	managerCfg := *cfg
 	managerCfg.UserAgent = "AKO"
-	mgr, err := operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), scheme.Scheme).
+	mgr, err := operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), scheme.Scheme, 5*time.Minute).
 		WithConfig(&managerCfg).
 		WithNamespaces(namespace.Name).
 		WithLogger(logger).

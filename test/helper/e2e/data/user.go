@@ -3,8 +3,9 @@ package data
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/common"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/common"
 )
 
 const (
@@ -22,8 +23,10 @@ func BasicUser(crName, atlasUserName string, add ...func(user *akov2.AtlasDataba
 			Name: crName,
 		},
 		Spec: akov2.AtlasDatabaseUserSpec{
-			Project: common.ResourceRefNamespaced{
-				Name: ProjectName,
+			ProjectDualReference: akov2.ProjectDualReference{
+				ProjectRef: &common.ResourceRefNamespaced{
+					Name: ProjectName,
+				},
 			},
 			Username: atlasUserName,
 		},
@@ -92,7 +95,8 @@ func WithOIDCEnabled() func(user *akov2.AtlasDatabaseUser) {
 
 func WithProject(project *akov2.AtlasProject) func(user *akov2.AtlasDatabaseUser) {
 	return func(user *akov2.AtlasDatabaseUser) {
-		user.Spec.Project = common.ResourceRefNamespaced{
+		user.Spec.ExternalProjectRef = nil
+		user.Spec.ProjectRef = &common.ResourceRefNamespaced{
 			Name:      project.Name,
 			Namespace: project.Namespace,
 		}
@@ -102,5 +106,23 @@ func WithProject(project *akov2.AtlasProject) func(user *akov2.AtlasDatabaseUser
 func WithLabels(labels []common.LabelSpec) func(user *akov2.AtlasDatabaseUser) {
 	return func(user *akov2.AtlasDatabaseUser) {
 		user.Spec.Labels = labels
+	}
+}
+
+func WithCredentials(secretName string) func(user *akov2.AtlasDatabaseUser) {
+	return func(user *akov2.AtlasDatabaseUser) {
+		user.Spec.ConnectionSecret = &api.LocalObjectReference{Name: secretName}
+	}
+}
+
+func WithExternalProjectRef(projectID, credentialsName string) func(user *akov2.AtlasDatabaseUser) {
+	return func(user *akov2.AtlasDatabaseUser) {
+		user.Spec.ProjectRef = nil
+		user.Spec.ExternalProjectRef = &akov2.ExternalProjectReference{
+			ID: projectID,
+		}
+		user.Spec.ConnectionSecret = &api.LocalObjectReference{
+			Name: credentialsName,
+		}
 	}
 }

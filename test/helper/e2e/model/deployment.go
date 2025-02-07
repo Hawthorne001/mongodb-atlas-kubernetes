@@ -5,7 +5,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/utils"
 )
 
@@ -33,7 +33,7 @@ func LoadUserDeploymentConfig(path string) AtlasDeployment {
 
 func (ad *AtlasDeployment) DeploymentFileName(input UserInputs) string {
 	// return "data/deployment-" + ac.ObjectMeta.Name + "-" + ac.Spec.Project.Name + ".yaml"
-	return filepath.Dir(input.ProjectPath) + "/" + ad.ObjectMeta.Name + "-" + ad.Spec.Project.Name + ".yaml"
+	return filepath.Dir(input.ProjectPath) + "/" + ad.ObjectMeta.Name + "-" + ad.Spec.ProjectRef.Name + ".yaml"
 }
 
 func (ad *AtlasDeployment) GetDeploymentNameResource() string {

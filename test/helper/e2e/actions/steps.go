@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/actions/kube"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/api/atlas"
 	appclient "github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/appclient"
@@ -340,22 +340,57 @@ func CheckUsersCanUseApp(data *model.TestDataProvider) {
 func CheckUsersCanUseOldApp(data *model.TestDataProvider) {
 	input := data.Resources
 	for i, user := range data.Resources.Users {
-		// data
-		port := strconv.Itoa(i + data.PortGroup)
-		key := port
-		expectedData := fmt.Sprintf("{\"key\":\"%s\",\"shipmodel\":\"heavy\",\"hp\":150}", key)
+		By(fmt.Sprintf("Checking user %s (%d) can use old App", user.Spec.Username, i), func() {
+			// data
+			port := strconv.Itoa(i + data.PortGroup)
+			key := port
+			expectedData := fmt.Sprintf("{\"key\":\"%s\",\"shipmodel\":\"heavy\",\"hp\":150}", key)
 
-		cli.Execute("kubectl", "delete", "pod", "-l", "app=test-app-"+user.Spec.Username, "-n", input.Namespace).Wait("2m")
-		WaitTestApplication(data, input.Namespace, "app", "test-app-"+user.Spec.Username)
+			By("Deleting pod to force an app restart and wait for it", func() {
+				cli.Execute(
+					"kubectl", "delete", "pod", "-l", "app=test-app-"+user.Spec.Username, "-n", input.Namespace,
+				).Wait("2m")
+				WaitTestApplication(data, input.Namespace, "app", "test-app-"+user.Spec.Username)
+			})
 
-		app := appclient.NewTestAppClient(port)
-		ExpectWithOffset(1, app.Get("")).Should(Equal("It is working"))
-		ExpectWithOffset(1, app.Get("/mongo/"+key)).Should(Equal(expectedData))
+			By(fmt.Sprintf("Verifying if a user (%s) is READY", user.Spec.Username), func() {
+				Eventually(func(g Gomega) {
+					dbu := &akov2.AtlasDatabaseUser{}
+					g.Expect(data.K8SClient.Get(data.Context, client.ObjectKey{
+						Name:      fmt.Sprintf("%s-%s", data.Resources.Deployments[0].Spec.GetDeploymentName(), user.Spec.Username),
+						Namespace: data.Resources.Namespace},
+						dbu,
+					)).To(Succeed())
+					g.Expect(dbu.Status.Conditions).ShouldNot(BeEmpty())
+					for _, condition := range dbu.Status.Conditions {
+						if condition.Type == api.ReadyType {
+							g.Expect(condition.Status).Should(Equal(corev1.ConditionTrue), "User should be ready")
+						}
+					}
+				}).WithTimeout(5 * time.Minute).WithPolling(5 * time.Second).Should(Succeed())
+			})
 
-		key = port + "up"
-		dataUpdated := fmt.Sprintf("{\"key\":\"%s\",\"shipmodel\":\"heavy\",\"hp\":150}", key)
-		ExpectWithOffset(1, app.Post(dataUpdated)).ShouldNot(HaveOccurred())
-		ExpectWithOffset(1, app.Get("/mongo/"+key)).Should(Equal(dataUpdated))
+			app := appclient.NewTestAppClient(port)
+			By("Test restarted App access", func() {
+				getRoot := app.Get("")
+				GinkgoWriter.Write([]byte(fmt.Sprintf("Test App GET: %q\n", getRoot)))
+				ExpectWithOffset(1, getRoot).Should(Equal("It is working"))
+				getKey := app.Get("/mongo/" + key)
+				GinkgoWriter.Write([]byte(fmt.Sprintf("Test App GET /mongo/%s: %q\n", key, getKey)))
+				ExpectWithOffset(1, getKey).Should(Equal(expectedData))
+			})
+
+			By("Test restarted App update", func() {
+				key = port + "up"
+				dataUpdated := fmt.Sprintf("{\"key\":\"%s\",\"shipmodel\":\"heavy\",\"hp\":150}", key)
+				err := app.Post(dataUpdated)
+				GinkgoWriter.Write([]byte(fmt.Sprintf("Test App POST %v: %v\n", dataUpdated, err)))
+				ExpectWithOffset(1, err).ShouldNot(HaveOccurred())
+				getKey := app.Get("/mongo/" + key)
+				GinkgoWriter.Write([]byte(fmt.Sprintf("Test App GET /mongo/%s: %q\n", key, getKey)))
+				ExpectWithOffset(1, getKey).Should(Equal(dataUpdated))
+			})
+		})
 	}
 }
 
@@ -369,7 +404,7 @@ func PrepareUsersConfigurations(data *model.TestDataProvider) {
 		})
 		if len(data.Resources.Deployments) > 0 {
 			By("Create deployment spec", func() {
-				data.Resources.Deployments[0].Spec.Project.Name = data.Resources.Project.GetK8sMetaName()
+				data.Resources.Deployments[0].Spec.ProjectRef.Name = data.Resources.Project.GetK8sMetaName()
 				utils.SaveToFile(
 					data.Resources.Deployments[0].DeploymentFileName(data.Resources),
 					utils.JSONToYAMLConvert(data.Resources.Deployments[0]),

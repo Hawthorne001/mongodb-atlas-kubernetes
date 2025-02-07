@@ -1,12 +1,10 @@
 module tools/metrics
 
-go 1.22.1
-
-toolchain go1.22.5
+go 1.23.6
 
 require (
 	github.com/google/go-github/v57 v57.0.0
-	github.com/stretchr/testify v1.9.0
+	github.com/stretchr/testify v1.10.0
 )
 
 require (

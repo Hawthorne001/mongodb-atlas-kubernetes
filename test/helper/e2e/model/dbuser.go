@@ -5,8 +5,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/common"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/common"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/utils"
 )
 
@@ -43,8 +43,10 @@ func NewDBUser(userName string) *DBUser {
 		},
 		Spec: UserSpec{
 			Username: userName,
-			Project: common.ResourceRefNamespaced{
-				Name: "my-project",
+			ProjectDualReference: akov2.ProjectDualReference{
+				ProjectRef: &common.ResourceRefNamespaced{
+					Name: "my-project",
+				},
 			},
 		},
 	}
@@ -56,7 +58,7 @@ func (s *DBUser) WithAuthDatabase(name string) *DBUser {
 }
 
 func (s *DBUser) WithProjectRef(name string) *DBUser {
-	s.Spec.Project.Name = name
+	s.Spec.ProjectRef.Name = name
 	return s
 }
 

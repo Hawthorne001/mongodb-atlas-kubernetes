@@ -6,15 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nsf/jsondiff"
 	"go.mongodb.org/atlas-sdk/v20231115008/admin"
 
-	"github.com/nsf/jsondiff"
-
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/common"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/cmp"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/pointer"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/timeutil"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/common"
 )
 
 type User struct {
@@ -65,9 +64,10 @@ func (u *User) clearedSpecClone() *akov2.AtlasDatabaseUserSpec {
 		return nil
 	}
 	clone := *u.AtlasDatabaseUserSpec
-	clone.Project.Name = ""
-	clone.Project.Namespace = ""
+	clone.ProjectRef = nil
 	clone.PasswordSecret = nil
+	clone.ExternalProjectRef = nil
+	clone.ConnectionSecret = nil
 	return &clone
 }
 

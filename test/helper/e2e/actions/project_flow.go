@@ -6,21 +6,18 @@ import (
 	"os"
 	"time"
 
-	"k8s.io/apimachinery/pkg/types"
-
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/featureflags"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/status"
-	helper "github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/api/aws"
-
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/status"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/featureflags"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/actions/deploy"
+	helper "github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/api/aws"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/config"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/k8s"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/model"
@@ -28,10 +25,10 @@ import (
 
 func ProjectCreationFlow(userData *model.TestDataProvider) {
 	By("Prepare operator configurations", func() {
-		mgr := PrepareOperatorConfigurations(userData)
+		r := PrepareOperatorConfigurations(userData)
 		ctx := context.Background()
 		go func(ctx context.Context) context.Context {
-			err := mgr.Start(ctx)
+			err := r.Start(ctx)
 			Expect(err).NotTo(HaveOccurred())
 			return ctx
 		}(ctx)
@@ -40,9 +37,9 @@ func ProjectCreationFlow(userData *model.TestDataProvider) {
 	})
 }
 
-func PrepareOperatorConfigurations(userData *model.TestDataProvider) manager.Manager {
+func PrepareOperatorConfigurations(userData *model.TestDataProvider) manager.Runnable {
 	CreateNamespaceAndSecrets(userData)
-	mgr, err := k8s.BuildManager(&k8s.Config{
+	c, err := k8s.BuildCluster(&k8s.Config{
 		WatchedNamespaces: map[string]bool{
 			userData.Resources.Namespace: true,
 		},
@@ -55,7 +52,7 @@ func PrepareOperatorConfigurations(userData *model.TestDataProvider) manager.Man
 		FeatureFlags:                featureflags.NewFeatureFlags(os.Environ),
 	})
 	Expect(err).NotTo(HaveOccurred())
-	return mgr
+	return c
 }
 
 func CreateNamespaceAndSecrets(userData *model.TestDataProvider) {
