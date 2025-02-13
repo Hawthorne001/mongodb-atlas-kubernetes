@@ -134,6 +134,30 @@ metadata:
         },
         {
           "apiVersion": "atlas.mongodb.com/v1",
+          "kind": "AtlasIPAccessList",
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "mongodb-atlas-kubernetes"
+            },
+            "name": "atlasipaccesslist-sample"
+          },
+          "spec": {
+            "entries": [
+              {
+                "cidrBlock": "192.168.1.0/24"
+              },
+              {
+                "deleteAfterDate": "2025-01-20T23:59:59+02:00",
+                "ipAddress": "10.0.0.1"
+              }
+            ],
+            "projectRef": {
+              "name": "my-project"
+            }
+          }
+        },
+        {
+          "apiVersion": "atlas.mongodb.com/v1",
           "kind": "AtlasProject",
           "metadata": {
             "name": "my-project"
@@ -168,7 +192,7 @@ metadata:
       ]
     capabilities: Full Lifecycle
     categories: Database
-    createdAt: "2024-07-31T14:49:43Z"
+    createdAt: "2025-02-05T16:58:54Z"
     description: The MongoDB Atlas Kubernetes Operator enables easy management of Clusters in MongoDB Atlas
     features.operators.openshift.io/disconnected: "false"
     features.operators.openshift.io/fips-compliant: "false"
@@ -179,12 +203,12 @@ metadata:
     features.operators.openshift.io/token-auth-gcp: "false"
     operators.operatorframework.io/builder: operator-sdk-v1.34.1
     operators.operatorframework.io/project_layout: go.kubebuilder.io/v4
-    containerImage: mongodb/mongodb-atlas-kubernetes-operator:2.4.1
+    containerImage: mongodb/mongodb-atlas-kubernetes-operator:2.7.0
   labels:
     operatorframework.io/arch.amd64: supported
     operatorframework.io/arch.arm64: supported
     operatorframework.io/os.linux: supported
-  name: mongodb-atlas-kubernetes.v2.4.1
+  name: mongodb-atlas-kubernetes.v2.7.0
   namespace: placeholder
 spec:
   apiservicedefinitions: {}
@@ -202,6 +226,11 @@ spec:
         displayName: Atlas Backup Schedule
         kind: AtlasBackupSchedule
         name: atlasbackupschedules.atlas.mongodb.com
+        version: v1
+      - description: AtlasCustomRole is the Schema for the AtlasCustomRole API
+        displayName: Atlas Custom Role
+        kind: AtlasCustomRole
+        name: atlascustomroles.atlas.mongodb.com
         version: v1
       - description: AtlasDatabaseUser is the Schema for the Atlas Database User API
         displayName: Atlas Database User
@@ -222,6 +251,16 @@ spec:
         displayName: Atlas Federated Auth
         kind: AtlasFederatedAuth
         name: atlasfederatedauths.atlas.mongodb.com
+        version: v1
+      - description: AtlasIPAccessList is the Schema for the atlasipaccesslists API.
+        displayName: Atlas IPAccess List
+        kind: AtlasIPAccessList
+        name: atlasipaccesslists.atlas.mongodb.com
+        version: v1
+      - description: "The AtlasPrivateEndpoint custom resource definition (CRD) defines a desired [Private Endpoint](https://www.mongodb.com/docs/atlas/security-private-endpoint/#std-label-private-endpoint-overview) configuration for an Atlas project. It allows a private connection between your cloud provider and Atlas that doesn't send information through a public network. \n You can use private endpoints to create a unidirectional connection to Atlas clusters from your virtual network."
+        displayName: Atlas Private Endpoint
+        kind: AtlasPrivateEndpoint
+        name: atlasprivateendpoints.atlas.mongodb.com
         version: v1
       - description: AtlasProject is the Schema for the atlasprojects API
         displayName: Atlas Project
@@ -304,225 +343,19 @@ spec:
                 - atlas.mongodb.com
               resources:
                 - atlasbackupcompliancepolicies
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasbackupcompliancepolicies/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasbackuppolicies
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasbackuppolicies/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasbackupschedules
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasbackupschedules/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
+                - atlascustomroles
                 - atlasdatabaseusers
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasdatabaseusers/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasdatafederations
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasdatafederations/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasdeployments
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasdeployments/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasfederatedauths
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasfederatedauths/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
+                - atlasipaccesslists
+                - atlasprivateendpoints
                 - atlasprojects
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasprojects/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlassearchindexconfigs
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlassearchindexconfigs/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasstreamconnections
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasstreamconnections/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasstreaminstances
-              verbs:
-                - create
-                - delete
-                - get
-                - list
-                - patch
-                - update
-                - watch
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
-                - atlasstreaminstances/status
-              verbs:
-                - get
-                - patch
-                - update
-            - apiGroups:
-                - atlas.mongodb.com
-              resources:
                 - atlasteams
               verbs:
                 - create
@@ -535,10 +368,30 @@ spec:
             - apiGroups:
                 - atlas.mongodb.com
               resources:
+                - atlasbackupcompliancepolicies/status
+                - atlasbackuppolicies/status
+                - atlasbackupschedules/status
+                - atlascustomroles/status
+                - atlasdatabaseusers/status
+                - atlasdatafederations/status
+                - atlasdeployments/status
+                - atlasfederatedauths/status
+                - atlasipaccesslists/status
+                - atlasprivateendpoints/status
+                - atlasprojects/status
+                - atlassearchindexconfigs/status
+                - atlasstreamconnections/status
+                - atlasstreaminstances/status
                 - atlasteams/status
               verbs:
                 - get
                 - patch
+                - update
+            - apiGroups:
+                - atlas.mongodb.com
+              resources:
+                - atlasipaccesslists/finalizers
+              verbs:
                 - update
           serviceAccountName: mongodb-atlas-operator
       deployments:
@@ -585,7 +438,7 @@ spec:
                         valueFrom:
                           fieldRef:
                             fieldPath: metadata.annotations['olm.targetNamespaces']
-                    image: mongodb/mongodb-atlas-kubernetes-operator:2.4.1
+                    image: mongodb/mongodb-atlas-kubernetes-operator:2.7.0
                     imagePullPolicy: Always
                     livenessProbe:
                       httpGet:
@@ -669,5 +522,5 @@ spec:
   maturity: beta
   provider:
     name: MongoDB, Inc
-  version: 2.4.1
-  replaces: mongodb-atlas-kubernetes.v2.4.0
+  version: 2.7.0
+  replaces: mongodb-atlas-kubernetes.v2.6.1

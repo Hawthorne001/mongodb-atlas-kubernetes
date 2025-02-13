@@ -5,11 +5,11 @@ import (
 	"fmt"
 
 	"github.com/onsi/gomega"
-	apiErrors "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/kube"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/conditions"
 )
 
@@ -38,7 +38,7 @@ func CheckCondition(k8sClient client.Client, createdResource api.AtlasCustomReso
 func ReadAtlasResource(ctx context.Context, k8sClient client.Client, createdResource api.AtlasCustomResource) bool {
 	if err := k8sClient.Get(ctx, kube.ObjectKeyFromObject(createdResource), createdResource); err != nil {
 		// The only error we tolerate is "not found"
-		gomega.Expect(apiErrors.IsNotFound(err)).To(gomega.BeTrue(), fmt.Sprintf("Unexpected error: %s", err))
+		gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), fmt.Sprintf("Unexpected error: %s", err))
 		return false
 	}
 	return true

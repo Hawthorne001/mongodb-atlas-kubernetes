@@ -6,15 +6,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nsf/jsondiff"
 	"go.mongodb.org/atlas-sdk/v20231115008/admin"
 
-	"github.com/nsf/jsondiff"
-
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/common"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/cmp"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/pointer"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/timeutil"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/common"
 )
 
 type User struct {
@@ -65,9 +64,10 @@ func (u *User) clearedSpecClone() *akov2.AtlasDatabaseUserSpec {
 		return nil
 	}
 	clone := *u.AtlasDatabaseUserSpec
-	clone.Project.Name = ""
-	clone.Project.Namespace = ""
+	clone.ProjectRef = nil
 	clone.PasswordSecret = nil
+	clone.ExternalProjectRef = nil
+	clone.ConnectionSecret = nil
 	return &clone
 }
 
@@ -85,6 +85,9 @@ func normalize(spec *akov2.AtlasDatabaseUserSpec) error {
 			a.Name+string(a.Type),
 			b.Name+string(b.Type))
 	})
+	if spec.Scopes == nil {
+		spec.Scopes = []akov2.ScopeSpec{}
+	}
 	if spec.DeleteAfterDate != "" { // enforce date format
 		operatorDeleteDate, err := timeutil.ParseISO8601(spec.DeleteAfterDate)
 		if err != nil {
@@ -178,7 +181,7 @@ func rolesToAtlas(roles []akov2.RoleSpec) *[]admin.DatabaseUserRole {
 
 func scopesToAtlas(scopes []akov2.ScopeSpec) *[]admin.UserScope {
 	if len(scopes) == 0 {
-		return nil
+		return &[]admin.UserScope{}
 	}
 	atlasScopes := []admin.UserScope{}
 	for _, scope := range scopes {
@@ -199,9 +202,9 @@ func dateFromAtlas(date *time.Time) string {
 
 func scopesFromAtlas(scopes []admin.UserScope) ([]akov2.ScopeSpec, error) {
 	if len(scopes) == 0 {
-		return nil, nil
+		return []akov2.ScopeSpec{}, nil
 	}
-	specScopes := []akov2.ScopeSpec{}
+	specScopes := make([]akov2.ScopeSpec, 0, len(scopes))
 	for _, scope := range scopes {
 		scopeType, err := scopeTypeFromAtlas(scope.Type)
 		if err != nil {

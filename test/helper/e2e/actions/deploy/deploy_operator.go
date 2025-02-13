@@ -12,8 +12,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/featureflags"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/actions/kube"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/api/atlas"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/config"
@@ -29,7 +29,7 @@ func MultiNamespaceOperator(data *model.TestDataProvider, watchNamespace []strin
 		for _, ns := range watchNamespace {
 			watchNamespaceMap[ns] = true
 		}
-		mgr, err := k8s.BuildManager(&k8s.Config{
+		c, err := k8s.BuildCluster(&k8s.Config{
 			GlobalAPISecret: client.ObjectKey{
 				Namespace: config.DefaultOperatorNS,
 				Name:      config.DefaultOperatorGlobalKey,
@@ -40,7 +40,7 @@ func MultiNamespaceOperator(data *model.TestDataProvider, watchNamespace []strin
 		Expect(err).Should(Succeed())
 		ctx := context.Background()
 		go func(ctx context.Context) {
-			err = mgr.Start(ctx)
+			err = c.Start(ctx)
 			Expect(err).Should(Succeed(), "Operator should be started")
 		}(ctx)
 		data.ManagerContext = ctx
@@ -83,7 +83,7 @@ func CreateInitialDeployments(testData *model.TestDataProvider) {
 		for _, deployment := range testData.InitialDeployments {
 			if deployment.Namespace == "" {
 				deployment.Namespace = testData.Resources.Namespace
-				deployment.Spec.Project.Namespace = testData.Resources.Namespace
+				deployment.Spec.ProjectRef.Namespace = testData.Resources.Namespace
 			}
 			err := testData.K8SClient.Create(testData.Context, deployment)
 			Expect(err).ShouldNot(HaveOccurred(), fmt.Sprintf("Deployment was not created: %v", deployment))
@@ -97,18 +97,24 @@ func CreateUsers(testData *model.TestDataProvider) {
 		for _, user := range testData.Users {
 			if user.Namespace == "" {
 				user.Namespace = testData.Resources.Namespace
-				user.Spec.Project.Namespace = testData.Resources.Namespace
 			}
+
+			if user.Spec.ProjectRef != nil {
+				user.Spec.ProjectRef.Namespace = testData.Resources.Namespace
+			}
+
 			if user.Spec.PasswordSecret != nil {
 				secret := utils.UserSecretPassword()
 				Expect(k8s.CreateUserSecret(testData.Context, testData.K8SClient, secret,
 					user.Spec.PasswordSecret.Name, user.Namespace)).Should(Succeed(),
 					"Create user secret failed")
 			}
+
 			err := testData.K8SClient.Create(testData.Context, user)
 			Expect(err).ShouldNot(HaveOccurred(), fmt.Sprintf("User was not created: %v", user))
 			Eventually(func(g Gomega) {
 				g.Expect(testData.K8SClient.Get(testData.Context, types.NamespacedName{Name: user.GetName(), Namespace: user.GetNamespace()}, user))
+				g.Expect(user.Status.Conditions).ShouldNot(BeEmpty())
 				for _, condition := range user.Status.Conditions {
 					if condition.Type == api.ReadyType {
 						g.Expect(condition.Status).Should(Equal(corev1.ConditionTrue), "User should be ready")

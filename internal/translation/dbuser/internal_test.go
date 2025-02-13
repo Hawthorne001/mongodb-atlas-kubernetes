@@ -8,9 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/atlas-sdk/v20231115008/admin"
 
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/pointer"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/timeutil"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
 )
 
 const (
@@ -116,6 +116,7 @@ func defaultTestUser() *User {
 		AtlasDatabaseUserSpec: &akov2.AtlasDatabaseUserSpec{
 			DatabaseName: testDB,
 			Username:     testUsername,
+			Scopes:       []akov2.ScopeSpec{},
 		},
 		Password:  testPassword,
 		ProjectID: testProjectID,

@@ -11,7 +11,14 @@ DOCKER_SBOM_PLUGIN_VERSION=0.6.1
 # To re-generate a bundle for another specific version without changing the standard setup, you can:
 # - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
 # - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= $(shell git describe --tags --dirty --broken | cut -c 2-)
+VERSION ?= $(shell git describe --always --tags --dirty --broken | cut -c 2-)
+
+# NEXT_VERSION represents a version that is higher than anything released
+# VERSION default value does not play well with the run target which might end up failing
+# with errors such as:
+# "version of the resource $Resource is higher than the operator version $VERSION"
+# This happens if you use exported YAMLs from CLI and the dirty version is deemed a pre-release
+NEXT_VERSION = 99.99.99-next
 
 MAJOR_VERSION = $(shell cat major-version)
 
@@ -24,7 +31,6 @@ CHANNELS ?= beta
 ifneq ($(origin CHANNELS), undefined)
 BUNDLE_CHANNELS := --channels=$(CHANNELS)
 endif
-
 # Used by the olm-deploy if you running on Mac and deploy to K8S/Openshift
 ifndef TARGET_ARCH
 TARGET_ARCH := $(shell go env GOARCH)
@@ -83,12 +89,26 @@ OPERATOR_NAMESPACE = mongodb-atlas-system
 ATLAS_DOMAIN = https://cloud-qa.mongodb.com/
 ATLAS_KEY_SECRET_NAME = mongodb-atlas-operator-api-key
 
+# Envtest configuration params
+ENVTEST_ASSETS_DIR ?= $(shell pwd)/bin
+ENVTEST_K8S_VERSION ?= 1.30.0
+KUBEBUILDER_ASSETS ?= $(ENVTEST_ASSETS_DIR)/k8s/$(ENVTEST_K8S_VERSION)-$(TARGET_OS)-$(TARGET_ARCH)
+
+# Ginkgo configuration
+GINKGO_NODES ?= 12
+GINKGO_EDITOR_INTEGRATION ?= true
+GINKGO_OPTS = -vv --randomize-all --output-interceptor-mode=none --trace --timeout 90m --flake-attempts=1 --race --nodes=$(GINKGO_NODES) --cover --coverpkg=github.com/mongodb/mongodb-atlas-kubernetes/v2/...
+GINKGO_FILTER_LABEL ?=
+ifneq ($(GINKGO_FILTER_LABEL),)
+GINKGO_FILTER_LABEL_OPT := --label-filter="$(GINKGO_FILTER_LABEL)"
+endif
+GINKGO=ginkgo run $(GINKGO_OPTS) $(GINKGO_FILTER_LABEL_OPT) $(shell pwd)/$@
+
 BASE_GO_PACKAGE = github.com/mongodb/mongodb-atlas-kubernetes/v2
 GO_LICENSES = go-licenses
+GO_LICENSES_VERSION = 1.6.0
+KUSTOMIZE = kustomize
 DISALLOWED_LICENSES = restricted,reciprocal
-
-# golangci-lint
-GOLANGCI_LINT_VERSION := v1.54.2
 
 REPORT_TYPE = flakiness
 SLACK_WEBHOOK ?= https://hooks.slack.com/services/...
@@ -112,6 +132,10 @@ CONTAINER_SPEC=.spec.template.spec.containers[0]
 
 SILK_ASSET_GROUP="atlas-kubernetes-operator"
 
+HELM_REPO_URL = "https://mongodb.github.io/helm-charts"
+HELM_AKO_INSTALL_NAME = local-ako-install
+HELM_AKO_NAMESPACE = $(OPERATOR_NAMESPACE)
+
 .DEFAULT_GOAL := help
 .PHONY: help
 help: ## Show this help screen
@@ -125,31 +149,32 @@ help: ## Show this help screen
 .PHONY: all
 all: manager ## Build all binaries
 
-go-licenses:
-	go install github.com/google/go-licenses@latest
-
-licenses.csv: go-licenses go.mod ## Track licenses in a CSV file
+.PHONY: build-licenses.csv
+build-licenses.csv: go.mod ## Track licenses in a CSV file
 	@echo "Tracking licenses into file $@"
 	@echo "========================================"
-	GOOS=linux GOARCH=amd64 go mod download
-	# https://github.com/google/go-licenses/issues/244
-	GOTOOLCHAIN=local GOOS=linux GOARCH=amd64 $(GO_LICENSES) csv --include_tests $(BASE_GO_PACKAGE)/... > $@
+	export GOOS=linux
+	export GOARCH=amd64
+	go run github.com/google/$(GO_LICENSES)@v$(GO_LICENSES_VERSION) csv --include_tests $(BASE_GO_PACKAGE)/... > licenses.csv
 	echo $(GOMOD_SHA) > $(LICENSES_GOMOD_SHA_FILE)
 
+.PHONY: recompute-licenses
 recompute-licenses: ## Recompute the licenses.csv only if needed (gomod was changed)
-	@[ "$(GOMOD_SHA)" == "$(GOMOD_LICENSES_SHA)" ] || $(MAKE) licenses.csv
+	@[ "$(GOMOD_SHA)" == "$(GOMOD_LICENSES_SHA)" ] || $(MAKE) build-licenses.csv
 
-licenses-up-to-date:
+.PHONY: licenses-up-to-date
+licenses-up-to-date: ## Check if the licenses.csv is up to date
 	@if [ "$(GOMOD_SHA)" != "$(GOMOD_LICENSES_SHA)" ]; then \
-	echo "licenses.csv needs to be recalculated: git rebase AND run 'make licenses.csv'"; exit 1; \
+	echo "licenses.csv needs to be recalculated: git rebase AND run 'make build-licenses.csv'"; exit 1; \
 	else echo "licenses.csv is OK! (up to date)"; fi
 
 .PHONY: check-licenses
-check-licenses: go-licenses licenses-up-to-date ## Check licenses are compliant with our restrictions
+check-licenses: licenses-up-to-date ## Check licenses are compliant with our restrictions
 	@echo "Checking licenses not to be: $(DISALLOWED_LICENSES)"
 	@echo "============================================"
-	# https://github.com/google/go-licenses/issues/244
-	GOTOOLCHAIN=local GOOS=linux GOARCH=amd64 $(GO_LICENSES) check --include_tests \
+	export GOOS=linux
+	export GOARCH=amd64
+	go run github.com/google/$(GO_LICENSES)@v$(GO_LICENSES_VERSION) check --include_tests \
 	--disallowed_types $(DISALLOWED_LICENSES) $(BASE_GO_PACKAGE)/...
 	@echo "--------------------"
 	@echo "Licenses check: PASS"
@@ -158,19 +183,18 @@ check-licenses: go-licenses licenses-up-to-date ## Check licenses are compliant 
 unit-test:
 	go test -race -cover $(GO_UNIT_TEST_FOLDERS)
 
-.PHONY: int-test
-int-test: ENVTEST_ASSETS_DIR = $(shell pwd)/testbin
-int-test: ENVTEST_K8S_VERSION = 1.26.1
-int-test: export ATLAS_ORG_ID=$(shell grep "ATLAS_ORG_ID" .actrc | cut -d "=" -f 2)
-int-test: export ATLAS_PUBLIC_KEY=$(shell grep "ATLAS_PUBLIC_KEY" .actrc | cut -d "=" -f 2)
-int-test: export ATLAS_PRIVATE_KEY=$(shell grep "ATLAS_PRIVATE_KEY" .actrc | cut -d "=" -f 2)
-# magical env that if specified makes the test output 0 on successful runs
-# https://github.com/onsi/ginkgo/blob/master/ginkgo/run_command.go#L130
-int-test: export GINKGO_EDITOR_INTEGRATION="true"
-int-test: generate manifests ## Run integration tests. Sample with labels: `make int-test label=AtlasProject` or `make int-test label='AtlasDeployment && !slow'`
+## Run integration tests. Sample with labels: `make test/int GINKGO_FILTER_LABEL=AtlasProject`
+test/int: envtest
+	AKO_INT_TEST=1 KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) $(GINKGO)
+
+test/int/clusterwide: envtest
+	AKO_INT_TEST=1 KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS) $(GINKGO)
+
+envtest: envtest-assets
+	KUBEBUILDER_ASSETS=$(shell setup-envtest use $(ENVTEST_K8S_VERSION) --bin-dir $(ENVTEST_ASSETS_DIR) -p path)
+
+envtest-assets:
 	mkdir -p $(ENVTEST_ASSETS_DIR)
-	test -f $(ENVTEST_ASSETS_DIR)/setup-envtest.sh || curl -sSLo $(ENVTEST_ASSETS_DIR)/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/v0.8.0/hack/setup-envtest.sh
-	export ENVTEST_K8S_VERSION=$(ENVTEST_K8S_VERSION) && source $(ENVTEST_ASSETS_DIR)/setup-envtest.sh; fetch_envtest_tools $(ENVTEST_ASSETS_DIR); setup_envtest_env $(ENVTEST_ASSETS_DIR); ./scripts/int_local.sh $(label)
 
 .PHONY: e2e
 e2e: run-kind ## Run e2e test. Command `make e2e label=cluster-ns` run cluster-ns test
@@ -185,7 +209,7 @@ bin/$(TARGET_OS)/$(TARGET_ARCH):
 
 bin/$(TARGET_OS)/$(TARGET_ARCH)/manager: $(GO_SOURCES) bin/$(TARGET_OS)/$(TARGET_ARCH)
 	@echo "Building operator with version $(VERSION); $(TARGET_OS) - $(TARGET_ARCH)"
-	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $@ -ldflags="-X github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/version.Version=$(VERSION)" cmd/manager/main.go
+	CGO_ENABLED=0 GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) go build -o $@ -ldflags="-X github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/version.Version=$(VERSION)" cmd/main.go
 	@touch $@
 
 bin/manager: bin/$(TARGET_OS)/$(TARGET_ARCH)/manager
@@ -195,29 +219,27 @@ bin/manager: bin/$(TARGET_OS)/$(TARGET_ARCH)/manager
 manager: generate fmt vet bin/manager recompute-licenses ## Build manager binary
 
 .PHONY: install
-install: manifests kustomize ## Install CRDs from a cluster
+install: manifests ## Install CRDs from a cluster
 	$(KUSTOMIZE) build config/crd | kubectl apply -f -
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from a cluster
+uninstall: manifests ## Uninstall CRDs from a cluster
 	$(KUSTOMIZE) build config/crd | kubectl delete -f -
 
 .PHONY: deploy
 deploy: generate manifests run-kind ## Deploy controller in the configured Kubernetes cluster in ~/.kube/config
 	@./scripts/deploy.sh
- 
+
 .PHONY: manifests
 # Produce CRDs that work back to Kubernetes 1.16 (so 'apiVersion: apiextensions.k8s.io/v1')
 manifests: CRD_OPTIONS ?= "crd:crdVersions=v1,ignoreUnexportedFields=true"
-manifests: fmt controller-gen ## Generate manifests e.g. CRD, RBAC etc.
-	controller-gen $(CRD_OPTIONS) rbac:roleName=manager-role webhook paths="./pkg/..." output:crd:artifacts:config=config/crd/bases
+manifests: fmt ## Generate manifests e.g. CRD, RBAC etc.
+	controller-gen $(CRD_OPTIONS) rbac:roleName=manager-role webhook paths="./api/..." paths="./internal/controller/..." output:crd:artifacts:config=config/crd/bases
 	@./scripts/split_roles_yaml.sh
 
-golangci-lint:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 .PHONY: lint
-lint: golangci-lint
+lint: ## Run the lint against the code
 	golangci-lint run --timeout 10m
 
 $(TIMESTAMPS_DIR)/fmt: $(GO_SOURCES)
@@ -230,8 +252,7 @@ fmt: $(TIMESTAMPS_DIR)/fmt ## Run go fmt against code
 
 fix-lint:
 	find . -name "*.go" -not -path "./vendor/*" -exec gofmt -w "{}" \;
-	goimports -local github.com/mongodb/mongodb-atlas-kubernetes/v2 -w ./pkg
-	goimports -local github.com/mongodb/mongodb-atlas-kubernetes/v2 -w ./test
+	goimports -local github.com/mongodb/mongodb-atlas-kubernetes/v2 -w ./internal ./api ./test
 	golangci-lint run --fix
 
 $(TIMESTAMPS_DIR)/vet: $(GO_SOURCES)
@@ -241,68 +262,42 @@ $(TIMESTAMPS_DIR)/vet: $(GO_SOURCES)
 .PHONY: vet
 vet: $(TIMESTAMPS_DIR)/vet ## Run go vet against code
 
-.PHONY: controller-gen
-controller-gen: ## Download controller-gen locally if necessary
-	go install sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0
-
 .PHONY: generate
-generate: controller-gen ${GO_SOURCES} ## Generate code
-	controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./pkg/..."
+generate: ${GO_SOURCES} ## Generate code
+	controller-gen object:headerFile="hack/boilerplate.go.txt" paths="./api/..." paths="./internal/controller/..."
 	$(MAKE) fmt
 
-FILES = $(shell git ls-files -o -m --directory --exclude-standard --no-empty-directory)
-TEMP := $(shell echo "$(FILES)" | awk 'NF')
-LINES := $(shell echo "$(FILES)" | awk -F=' ' "{ print NF }")
-check-missing-files:  ## Check autogenerated runtime objects and manifest files are missing
-	@echo "Checking autogenerated runtime objects and manifests"
-	@echo "============================================"
-ifneq ("$(LINES)","0")
-	@echo "Detected files that need to be committed:"
-	@echo "$(FILES)" | sed -e "s/^/  /"
-	@echo ""
-	@echo "Try running: make generate manifests"
-	@exit 1
+.PHONY: check-missing-files
+check-missing-files: ## Check autogenerated runtime objects and manifest files are missing
+	$(info Checking autogenerated runtime objects and manifests)
+	$(info ============================================)
+ifneq ($(shell git ls-files -o -m --directory --exclude-standard --no-empty-directory),)
+	$(info Detected files that need to be committed:)
+	$(info $(shell git ls-files -o -m --directory --exclude-standard --no-empty-directory | sed -e "s/^/  /"))
+	$(info )
+	$(info Try running: make generate manifests)
+	$(error Check: FAILED)
+else
+	$(info Check: PASS)
 endif
-	@echo "--------------------"
-	@echo "Check: PASS"
 
 .PHONY: validate-manifests
-validate-manifests: generate manifests check-missing-files
-
-.PHONY: kustomize
-KUSTOMIZE = $(shell pwd)/bin/kustomize
-kustomize: ## Download kustomize locally if necessary
-ifeq ("$(wildcard $(KUSTOMIZE))", "")
-	rm -f ./kustomize
-	wget "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" -O kinstall.sh
-	chmod +x ./kinstall.sh && bash -c ./kinstall.sh && mv ./kustomize $(GOBIN)/kustomize
-	rm -f ./kinstall.sh
-endif
-
-# go-get-tool will 'go install' any package $2 and install it to $1.
-PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
-define go-get-tool
-@[ -f $(1) ] || { \
-set -e ;\
-TMP_DIR=$$(mktemp -d) ;\
-cd $$TMP_DIR ;\
-echo "Downloading $(2)" ;\
-GOBIN=$(PROJECT_DIR)/bin go install $(2) ;\
-rm -rf $$TMP_DIR ;\
-}
-endef
+validate-manifests: generate manifests
+	$(MAKE) check-missing-files
 
 .PHONY: bundle
-bundle: manifests kustomize ## Generate bundle manifests and metadata, then validate generated files.
+bundle: manifests  ## Generate bundle manifests and metadata, then validate generated files.
 	@echo "Building bundle $(VERSION)"
-	operator-sdk generate kustomize manifests -q --apis-dir=pkg/api
+	operator-sdk generate $(KUSTOMIZE) manifests -q --apis-dir=api
 	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
 	$(KUSTOMIZE) build --load-restrictor LoadRestrictionsNone config/manifests | operator-sdk generate bundle -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
 	operator-sdk bundle validate ./bundle
 
 .PHONY: image
 image: ## Build the operator image
-	$(CONTAINER_ENGINE) build --build-arg VERSION=$(VERSION) -t $(OPERATOR_IMAGE) .
+	$(MAKE) bin/linux/amd64/manager TARGET_OS=linux TARGET_ARCH=amd64 VERSION=$(VERSION)
+	$(MAKE) bin/linux/arm64/manager TARGET_OS=linux TARGET_ARCH=arm64 VERSION=$(VERSION)
+	$(CONTAINER_ENGINE) build -f fast.Dockerfile --build-arg VERSION=$(VERSION) -t $(OPERATOR_IMAGE) .
 	$(CONTAINER_ENGINE) push $(OPERATOR_IMAGE)
 
 .PHONY: bundle-build
@@ -462,41 +457,40 @@ test-metrics:
 .PHONY: test-tools ## Test all tools
 test-tools: test-clean test-makejwt test-metrics
 
-.PHONY: sign 
+.PHONY: sign
 sign: ## Sign an AKO multi-architecture image
 	@echo "Signing multi-architecture image $(IMG)..."
 	IMG=$(IMG) SIGNATURE_REPO=$(SIGNATURE_REPO) ./scripts/sign-multiarch.sh
 
-cosign:
-	@which cosign || go install github.com/sigstore/cosign/v2/cmd/cosign@latest
-
 ./ako.pem:
 	curl $(AKO_SIGN_PUBKEY) > $@
 
-.PHONY: verify 
-verify: cosign ./ako.pem ## Verify an AKO multi-architecture image's signature
+.PHONY: verify
+verify: ./ako.pem ## Verify an AKO multi-architecture image's signature
 	@echo "Verifying multi-architecture image signature $(IMG)..."
 	IMG=$(IMG) SIGNATURE_REPO=$(SIGNATURE_REPO) \
 	./scripts/sign-multiarch.sh verify && echo "VERIFIED OK"
 
-govulncheck:
-	go install golang.org/x/vuln/cmd/govulncheck@latest
+.PHONY: helm-upd-crds
+helm-upd-crds:
+	HELM_CRDS_PATH=$(HELM_CRDS_PATH) ./scripts/helm-upd-crds.sh
+
+.PHONY: helm-upd-rbac
+helm-upd-rbac:
+	HELM_RBAC_FILE=$(HELM_RBAC_FILE) ./scripts/helm-upd-rbac.sh
 
 .PHONY: vulncheck
-vulncheck: govulncheck ## Run govulncheck to find vulnerabilities in code
+vulncheck: ## Run govulncheck to find vulnerabilities in code
 	@./scripts/vulncheck.sh ./vuln-ignore
 
-envsubst:
-	@which envsubst || go install github.com/drone/envsubst/cmd/envsubst@latest
-
 .PHONY: generate-sboms
-generate-sboms: cosign ./ako.pem ## Generate a released version SBOMs
+generate-sboms: ./ako.pem ## Generate a released version SBOMs
 	mkdir -p docs/releases/v$(VERSION) && \
 	./scripts/generate_upload_sbom.sh -i $(RELEASED_OPERATOR_IMAGE):$(VERSION) -o docs/releases/v$(VERSION) && \
 	ls -l docs/releases/v$(VERSION)
 
 .PHONY: gen-sdlc-checklist
-gen-sdlc-checklist: envsubst ## Generate the SDLC checklist
+gen-sdlc-checklist: ## Generate the SDLC checklist
 	@VERSION="$(VERSION)" AUTHORS="$(AUTHORS)" ./scripts/gen-sdlc-checklist.sh
 
 # TODO: avoid leaving leftovers in the first place
@@ -525,13 +519,16 @@ install-credentials: set-namespace ## Install the Atlas credentials for the Oper
 	$(ATLAS_KEY_SECRET_NAME) atlas.mongodb.com/type=credentials
 
 .PHONY: prepare-run
-prepare-run: generate vet manifests manager run-kind install-crds install-credentials
+prepare-run: generate vet manifests run-kind install-crds install-credentials
+	rm bin/manager
+	$(MAKE) manager VERSION=$(NEXT_VERSION)
 
 .PHONY: run
 run: prepare-run ## Run a freshly compiled manager against kind
 ifdef RUN_YAML
 	kubectl apply -f $(RUN_YAML)
 endif
+	VERSION=$(NEXT_VERSION) \
 	OPERATOR_POD_NAME=$(OPERATOR_POD_NAME) \
 	OPERATOR_NAMESPACE=$(OPERATOR_NAMESPACE) \
 	bin/manager --object-deletion-protection=false --log-level=$(RUN_LOG_LEVEL) \
@@ -540,14 +537,10 @@ endif
 
 .PHONY: local-docker-build
 local-docker-build:
-	docker build -t $(LOCAL_IMAGE) .
-
-.PHONY: yq
-yq:
-	which yq || go install github.com/mikefarah/yq/v4@latest
+	docker build -f fast.Dockerfile -t $(LOCAL_IMAGE) .
 
 .PHONY: prepare-all-in-one
-prepare-all-in-one: yq local-docker-build run-kind
+prepare-all-in-one: local-docker-build run-kind
 	kubectl create namespace mongodb-atlas-system || echo "Namespace already in place"
 	kind load docker-image $(LOCAL_IMAGE)
 
@@ -577,7 +570,17 @@ download-from-silk: ## Download the latest augmented SBOM for a given architectu
 store-silk-sboms: download-from-silk ## Download & Store the latest augmented SBOM for a given version & architecture
 	SILK_ASSET_GROUP=$(SILK_ASSET_GROUP) ./scripts/store-sbom-in-s3.sh $(VERSION) $(TARGET_ARCH)
 
+.PHONY: install-ako-helm
+install-ako-helm:
+	helm repo add mongodb $(HELM_REPO_URL)
+	helm upgrade $(HELM_AKO_INSTALL_NAME) mongodb/mongodb-atlas-operator --atomic --install \
+	--set-string atlasURI=$(MCLI_OPS_MANAGER_URL) \
+	--set objectDeletionProtection=false \
+	--set subobjectDeletionProtection=false \
+	--namespace=$(HELM_AKO_NAMESPACE) --create-namespace
+	kubectl get crds
+
 .PHONY: contract-tests
-contract-tests: ## Run contract tests
+contract-tests: run-kind install-ako-helm ## Run contract tests with support by a k8s cluster and AKO
 	go clean -testcache
-	AKO_CONTRACT_TEST=1 go test -v -race -cover ./test/contract/...
+	AKO_CONTRACT_TEST=1 HELM_AKO_NAMESPACE=$(HELM_AKO_NAMESPACE) go test -v -race -cover ./test/contract/...

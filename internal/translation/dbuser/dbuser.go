@@ -9,8 +9,8 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/atlas"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/translation"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/atlas"
 )
 
 var (
@@ -55,7 +55,7 @@ func (dus *AtlasUsers) Get(ctx context.Context, db, projectID, username string) 
 func (dus *AtlasUsers) Delete(ctx context.Context, db, projectID, username string) error {
 	_, _, err := dus.usersAPI.DeleteDatabaseUser(ctx, projectID, db, username).Execute()
 	if err != nil {
-		if admin.IsErrorCode(err, atlas.UsernameNotFound) {
+		if admin.IsErrorCode(err, atlas.UserNotfound) {
 			return errors.Join(ErrorNotFound, err)
 		}
 		return err

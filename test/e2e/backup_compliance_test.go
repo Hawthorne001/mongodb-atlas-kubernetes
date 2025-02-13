@@ -10,10 +10,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/common"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/workflow"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/common"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/workflow"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/actions"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/actions/deploy"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/data"
@@ -38,7 +38,6 @@ var _ = Describe("Backup Compliance Configuration", Label("backup-compliance"), 
 					WithBackupScheduleRef(common.ResourceRefNamespaced{}))
 
 			actions.ProjectCreationFlow(testData)
-			deploy.CreateInitialDeployments(testData)
 		})
 	})
 
@@ -52,7 +51,7 @@ var _ = Describe("Backup Compliance Configuration", Label("backup-compliance"), 
 	})
 
 	It("Configures a backup compliance policy", func(ctx context.Context) {
-		By("Creating a non-compliant backup policy and backup schedule", func() {
+		By("Creating a deployment with a non-compliant backup policy and backup schedule", func() {
 			backupPolicy := &akov2.AtlasBackupPolicy{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      fmt.Sprintf("%s-bkp-policy", testData.Project.Name),
@@ -89,13 +88,8 @@ var _ = Describe("Backup Compliance Configuration", Label("backup-compliance"), 
 			}
 			Expect(testData.K8SClient.Create(testData.Context, backupSchedule)).Should(Succeed())
 
-			_, err := akoretry.RetryUpdateOnConflict(ctx, testData.K8SClient, client.ObjectKeyFromObject(testData.InitialDeployments[0]), func(depl *akov2.AtlasDeployment) {
-				depl.Spec.BackupScheduleRef = common.ResourceRefNamespaced{
-					Name:      backupSchedule.Name,
-					Namespace: backupSchedule.Namespace,
-				}
-			})
-			Expect(err).To(BeNil())
+			testData.InitialDeployments[0].WithBackupScheduleRef(common.ResourceRefNamespaced{Name: backupSchedule.Name, Namespace: backupSchedule.Namespace})
+			deploy.CreateInitialDeployments(testData)
 		})
 
 		By("Creating a backup compliance policy in kubernetes", func() {

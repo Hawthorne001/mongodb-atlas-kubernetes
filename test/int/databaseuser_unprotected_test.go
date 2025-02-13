@@ -16,21 +16,22 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	corev1 "k8s.io/api/core/v1"
-	apiErrors "k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api"
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1/project"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/connectionsecret"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/customresource"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/controller/workflow"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/kube"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1/project"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/connectionsecret"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/customresource"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/controller/workflow"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/atlas"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/conditions"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/events"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/resources"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/retry"
 )
 
 const (
@@ -74,7 +75,8 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 		})
 
 		By("Creating a deployment", func() {
-			testDeployment = akov2.DefaultAWSDeployment(testNamespace.Name, projectName).Lightweight()
+			testDeployment = akov2.NewDefaultAWSFlexInstance(testNamespace.Name, projectName).
+				WithName("test-flex-deployment").WithAtlasName("test-flex-deployment")
 			Expect(k8sClient.Create(context.Background(), testDeployment)).To(Succeed())
 
 			Eventually(func() bool {
@@ -276,9 +278,83 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 			})
 		})
 
-		It("Adds connection secret when new deployment is created", Label("user-add-secret"), func() {
+		It("Adds connection secret when new deployment is created with an existing user", Label("user-add-secret"), func() {
 			secondDeployment := &akov2.AtlasDeployment{}
 
+			By("Creating a database user for existing deployment only", func() {
+				passwordSecret := buildPasswordSecret(testNamespace.Name, UserPasswordSecret, DBUserPassword)
+				Expect(k8sClient.Create(context.Background(), &passwordSecret)).To(Succeed())
+
+				testDBUser1 = akov2.NewDBUser(testNamespace.Name, dbUserName1, dbUserName1, projectName).
+					WithPasswordSecret(UserPasswordSecret).
+					WithScope(akov2.DeploymentScopeType, testDeployment.GetDeploymentName()).
+					WithRole("readWriteAnyDatabase", "admin", "")
+				Expect(k8sClient.Create(context.Background(), testDBUser1)).To(Succeed())
+
+				Eventually(func() bool {
+					return resources.CheckCondition(k8sClient, testDBUser1, api.TrueCondition(api.ReadyType))
+				}).WithTimeout(databaseUserTimeout).WithPolling(PollingInterval).Should(BeTrue())
+
+				validateSecret(k8sClient, *testProject, *testDeployment, *testDBUser1)
+
+				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
+			})
+
+			By("Creating a second deployment", func() {
+				secondDeployment = akov2.NewDefaultAzureFlexInstance(testNamespace.Name, projectName)
+				Expect(k8sClient.Create(context.Background(), secondDeployment)).To(Succeed())
+
+				Eventually(func() bool {
+					return resources.CheckCondition(k8sClient, secondDeployment, api.TrueCondition(api.ReadyType))
+				}).WithTimeout(5 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
+			})
+
+			By("Validating connection secrets for second deployment were not created", func() {
+				validateSecret(k8sClient, *testProject, *testDeployment, *testDBUser1)
+
+				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
+				Expect(tryConnect(testProject.ID(), *secondDeployment, *testDBUser1)).ShouldNot(Succeed())
+			})
+
+			By("Removing database user scope for first deployment", func() {
+				Expect(k8sClient.Get(context.Background(), client.ObjectKeyFromObject(testDBUser1), testDBUser1)).Should(Succeed())
+				testDBUser1.Spec.Scopes = nil
+
+				Expect(k8sClient.Update(context.Background(), testDBUser1)).To(Succeed())
+
+				Eventually(func() bool {
+					return resources.CheckCondition(k8sClient, testDBUser1, api.TrueCondition(api.ReadyType))
+				}).WithTimeout(databaseUserTimeout).WithPolling(PollingInterval).Should(BeTrue())
+			})
+
+			By("Validating connection secrets for both deployments were created", func() {
+				validateSecret(k8sClient, *testProject, *testDeployment, *testDBUser1)
+				validateSecret(k8sClient, *testProject, *secondDeployment, *testDBUser1)
+
+				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
+				Expect(tryConnect(testProject.ID(), *secondDeployment, *testDBUser1)).Should(Succeed())
+			})
+
+			By("Deleting the second deployment", func() {
+				deploymentName := secondDeployment.GetDeploymentName()
+				Expect(k8sClient.Delete(context.Background(), secondDeployment)).To(Succeed())
+
+				Eventually(func() bool {
+					_, r, err := atlasClientv20241113001.FlexClustersApi.
+						GetFlexCluster(context.Background(), testProject.ID(), deploymentName).
+						Execute()
+					if err != nil {
+						if r != nil && r.StatusCode == http.StatusNotFound {
+							return true
+						}
+					}
+
+					return false
+				}).WithTimeout(5 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
+			})
+		})
+
+		It("Adds connection secret when new user is created with an existing deployment", Label("user-add-secret"), func() {
 			By("Creating a database user", func() {
 				passwordSecret := buildPasswordSecret(testNamespace.Name, UserPasswordSecret, DBUserPassword)
 				Expect(k8sClient.Create(context.Background(), &passwordSecret)).To(Succeed())
@@ -297,39 +373,10 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
 			})
 
-			By("Creating a  second deployment", func() {
-				secondDeployment = akov2.DefaultAzureDeployment(testNamespace.Name, projectName).Lightweight()
-				Expect(k8sClient.Create(context.Background(), secondDeployment)).To(Succeed())
-
-				Eventually(func() bool {
-					return resources.CheckCondition(k8sClient, secondDeployment, api.TrueCondition(api.ReadyType))
-				}).WithTimeout(20 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
-			})
-
 			By("Validating connection secrets were created", func() {
 				validateSecret(k8sClient, *testProject, *testDeployment, *testDBUser1)
-				validateSecret(k8sClient, *testProject, *secondDeployment, *testDBUser1)
 
 				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
-				Expect(tryConnect(testProject.ID(), *secondDeployment, *testDBUser1)).Should(Succeed())
-			})
-
-			By("Deleting the second deployment", func() {
-				deploymentName := secondDeployment.GetDeploymentName()
-				Expect(k8sClient.Delete(context.Background(), secondDeployment)).To(Succeed())
-
-				Eventually(func() bool {
-					_, r, err := atlasClient.ClustersApi.
-						GetCluster(context.Background(), testProject.ID(), deploymentName).
-						Execute()
-					if err != nil {
-						if r != nil && r.StatusCode == http.StatusNotFound {
-							return true
-						}
-					}
-
-					return false
-				}).WithTimeout(20 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
 			})
 		})
 
@@ -388,7 +435,7 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 			secondTestDeployment := &akov2.AtlasDeployment{}
 
 			By("Creating a second deployment", func() {
-				secondTestDeployment = akov2.DefaultAzureDeployment(testNamespace.Name, projectName).Lightweight()
+				secondTestDeployment = akov2.NewDefaultAzureFlexInstance(testNamespace.Name, projectName)
 				Expect(k8sClient.Create(context.Background(), secondTestDeployment)).To(Succeed())
 
 				Eventually(func() bool {
@@ -432,9 +479,15 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 
 				checkNumberOfConnectionSecrets(k8sClient, *testProject, testNamespace.Name, 2)
 				secret := validateSecret(k8sClient, *testProject, *testDeployment, *testDBUser1)
-				Expect(secret.Name).To(Equal(fmt.Sprintf("%s-test-deployment-aws-new-user", kube.NormalizeIdentifier(testProject.Spec.Name))))
+				Expect(secret.Name).To(Equal(fmt.Sprintf("%s-%s-new-user",
+					kube.NormalizeIdentifier(testProject.Spec.Name),
+					kube.NormalizeIdentifier(testDeployment.GetDeploymentName()),
+				)))
 				secret = validateSecret(k8sClient, *testProject, *secondTestDeployment, *testDBUser1)
-				Expect(secret.Name).To(Equal(fmt.Sprintf("%s-test-deployment-azure-new-user", kube.NormalizeIdentifier(testProject.Spec.Name))))
+				Expect(secret.Name).To(Equal(fmt.Sprintf("%s-%s-new-user",
+					kube.NormalizeIdentifier(testProject.Spec.Name),
+					kube.NormalizeIdentifier(secondTestDeployment.GetDeploymentName()),
+				)))
 
 				Expect(tryConnect(testProject.ID(), *testDeployment, *testDBUser1)).Should(Succeed())
 				Expect(tryConnect(testProject.ID(), *secondTestDeployment, *testDBUser1)).Should(Succeed())
@@ -460,8 +513,8 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 				Expect(k8sClient.Delete(context.Background(), secondTestDeployment)).To(Succeed())
 
 				Eventually(func() bool {
-					_, r, err := atlasClient.ClustersApi.
-						GetCluster(context.Background(), testProject.ID(), deploymentName).
+					_, r, err := atlasClientv20241113001.FlexClustersApi.
+						GetFlexCluster(context.Background(), testProject.ID(), deploymentName).
 						Execute()
 					if err != nil {
 						if r != nil && r.StatusCode == http.StatusNotFound {
@@ -501,9 +554,11 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 
 			By("Fixing the user date expiration", func() {
 				after := time.Now().UTC().Add(time.Hour * 10).Format("2006-01-02T15:04:05")
-				testDBUser1 = testDBUser1.WithDeleteAfterDate(after)
 
 				Expect(k8sClient.Update(context.Background(), testDBUser1)).To(Succeed())
+				retry.RetryUpdateOnConflict(context.Background(), k8sClient, client.ObjectKeyFromObject(testDBUser1), func(user *akov2.AtlasDatabaseUser) {
+					user.Spec.DeleteAfterDate = after
+				})
 				Eventually(func() bool {
 					return resources.CheckCondition(k8sClient, testDBUser1, api.TrueCondition(api.ReadyType))
 				}).WithTimeout(databaseUserTimeout).WithPolling(PollingInterval).Should(BeTrue())
@@ -514,9 +569,11 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 
 			By("Expiring the User", func() {
 				before := time.Now().UTC().Add(time.Minute * -5).Format("2006-01-02T15:04:05")
-				testDBUser1 = testDBUser1.WithDeleteAfterDate(before)
 
 				Expect(k8sClient.Update(context.Background(), testDBUser1)).To(Succeed())
+				retry.RetryUpdateOnConflict(context.Background(), k8sClient, client.ObjectKeyFromObject(testDBUser1), func(user *akov2.AtlasDatabaseUser) {
+					user.Spec.DeleteAfterDate = before
+				})
 				Eventually(func() bool {
 					return resources.CheckCondition(k8sClient, testDBUser1, api.FalseCondition(api.DatabaseUserReadyType).WithReason(string(workflow.DatabaseUserExpired)))
 				}).WithTimeout(databaseUserTimeout).WithPolling(PollingInterval).Should(BeTrue())
@@ -585,8 +642,8 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 			Expect(k8sClient.Delete(context.Background(), testDeployment)).To(Succeed())
 
 			Eventually(func() bool {
-				_, r, err := atlasClient.ClustersApi.
-					GetCluster(context.Background(), testProject.ID(), deploymentName).
+				_, r, err := atlasClientv20241113001.FlexClustersApi.
+					GetFlexCluster(context.Background(), testProject.ID(), deploymentName).
 					Execute()
 				if err != nil {
 					if r != nil && r.StatusCode == http.StatusNotFound {
@@ -595,7 +652,7 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 				}
 
 				return false
-			}).WithTimeout(20 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
+			}).WithTimeout(10 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
 		})
 
 		By("Deleting the project", func() {
@@ -611,7 +668,7 @@ var _ = Describe("Atlas Database User", Label("int", "AtlasDatabaseUser", "prote
 				}
 
 				return false
-			}).WithTimeout(15 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
+			}).WithTimeout(5 * time.Minute).WithPolling(PollingInterval).Should(BeTrue())
 		})
 
 		By("Stopping the operator", func() {
@@ -646,8 +703,8 @@ func validateSecret(k8sClient client.Client, project akov2.AtlasProject, deploym
 	password, err := user.ReadPassword(context.Background(), k8sClient)
 	Expect(err).NotTo(HaveOccurred())
 
-	c, _, err := atlasClient.ClustersApi.
-		GetCluster(context.Background(), project.ID(), deployment.GetDeploymentName()).
+	c, _, err := atlasClientv20241113001.FlexClustersApi.
+		GetFlexCluster(context.Background(), project.ID(), deployment.GetDeploymentName()).
 		Execute()
 	Expect(err).NotTo(HaveOccurred())
 
@@ -656,8 +713,8 @@ func validateSecret(k8sClient client.Client, project akov2.AtlasProject, deploym
 	expectedData := map[string][]byte{
 		"connectionStringStandard":    []byte(buildConnectionURL(connectionStrings.GetStandard(), username, password)),
 		"connectionStringStandardSrv": []byte(buildConnectionURL(connectionStrings.GetStandardSrv(), username, password)),
-		"connectionStringPrivate":     []byte(buildConnectionURL(connectionStrings.GetPrivate(), username, password)),
-		"connectionStringPrivateSrv":  []byte(buildConnectionURL(connectionStrings.GetPrivateSrv(), username, password)),
+		"connectionStringPrivate":     []byte(""),
+		"connectionStringPrivateSrv":  []byte(""),
 		"username":                    []byte(username),
 		"password":                    []byte(password),
 	}
@@ -698,8 +755,8 @@ func buildConnectionURL(connURL, userName, password string) string {
 func mongoClient(projectID string, deployment akov2.AtlasDeployment, user akov2.AtlasDatabaseUser) (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	c, _, err := atlasClient.ClustersApi.
-		GetCluster(context.Background(), projectID, deployment.GetDeploymentName()).
+	c, _, err := atlasClientv20241113001.FlexClustersApi.
+		GetFlexCluster(context.Background(), projectID, deployment.GetDeploymentName()).
 		Execute()
 	Expect(err).NotTo(HaveOccurred())
 
@@ -785,7 +842,7 @@ func checkSecretsDontExist(namespace string, secretNames []string) func() bool {
 		for _, name := range secretNames {
 			s := corev1.Secret{}
 			err := k8sClient.Get(context.Background(), kube.ObjectKey(namespace, name), &s)
-			if err != nil && apiErrors.IsNotFound(err) {
+			if err != nil && apierrors.IsNotFound(err) {
 				nonExisting++
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/go-logr/zapr"
 	. "github.com/onsi/ginkgo/v2"
@@ -16,12 +17,12 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/collection"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/featureflags"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/operator"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/operator"
 )
 
 var (
@@ -29,7 +30,7 @@ var (
 	signalCancelledCtx     context.Context
 )
 
-func BuildManager(initCfg *Config) (manager.Manager, error) {
+func BuildCluster(initCfg *Config) (cluster.Cluster, error) {
 	akoScheme := runtime.NewScheme()
 	utilruntime.Must(scheme.AddToScheme(akoScheme))
 	utilruntime.Must(akov2.AddToScheme(akoScheme))
@@ -50,7 +51,7 @@ func BuildManager(initCfg *Config) (manager.Manager, error) {
 		signalCancelledCtx = ctrl.SetupSignalHandler()
 	})
 
-	return operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), akoScheme).
+	return operator.NewBuilder(operator.ManagerProviderFunc(ctrl.NewManager), akoScheme, 5*time.Minute).
 		WithConfig(ctrl.GetConfigOrDie()).
 		WithNamespaces(collection.Keys(config.WatchedNamespaces)...).
 		WithLogger(logger).
@@ -60,6 +61,7 @@ func BuildManager(initCfg *Config) (manager.Manager, error) {
 		WithAtlasDomain(config.AtlasDomain).
 		WithAPISecret(config.GlobalAPISecret).
 		WithDeletionProtection(config.ObjectDeletionProtection).
+		WithSkipNameValidation(true). // this is needed as this starts multiple controllers concurrently
 		Build(signalCancelledCtx)
 }
 
@@ -149,13 +151,13 @@ func RunManager(withConfigs ...ManagerConfig) (ManagerStart, error) {
 		withConfig(managerConfig)
 	}
 
-	mgr, err := BuildManager(managerConfig)
+	c, err := BuildCluster(managerConfig)
 	if err != nil {
 		return nil, err
 	}
 
 	return func(ctx context.Context) error {
-		err = mgr.Start(ctx)
+		err = c.Start(ctx)
 		if err != nil {
 			return err
 		}

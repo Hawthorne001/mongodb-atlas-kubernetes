@@ -3,58 +3,35 @@ package audit
 import (
 	"context"
 	_ "embed"
-	"log"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/api/v1"
 	"github.com/mongodb/mongodb-atlas-kubernetes/v2/internal/translation/audit"
-	akov2 "github.com/mongodb/mongodb-atlas-kubernetes/v2/pkg/api/v1"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/contract"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/control"
-	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/launcher"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/contract"
+	"github.com/mongodb/mongodb-atlas-kubernetes/v2/test/helper/e2e/utils"
 )
-
-//go:embed test.yml
-var testYml string
-
-const (
-	testVersion = "2.1.0"
-)
-
-func TestMain(m *testing.M) {
-	if !control.Enabled("AKO_CONTRACT_TEST") {
-		log.Printf("Skipping contract test as AKO_CONTRACT_TEST is unset")
-		return
-	}
-
-	l := launcher.NewFromEnv(testVersion)
-	if err := l.Launch(
-		testYml,
-		launcher.WaitReady("atlasprojects/my-project", time.Minute)); err != nil {
-		log.Fatalf("Failed to launch test bed: %v", err)
-	}
-
-	if !control.Enabled("SKIP_CLEANUP") { // allow to reuse Atlas resources for local tests
-		defer l.Cleanup()
-	}
-	os.Exit(m.Run())
-}
 
 func TestDefaultAuditingGet(t *testing.T) {
-	testProjectID := mustReadProjectID("atlasprojects/my-project2")
 	ctx := context.Background()
-	as := audit.NewAuditLog(contract.MustVersionedClient(t, ctx).AuditingApi)
+	contract.RunGoContractTest(ctx, t, "get default auditing", func(ch contract.ContractHelper) {
+		projectName := utils.RandomName("default-auditing-project")
+		require.NoError(t, ch.AddResources(ctx, 5*time.Minute, contract.DefaultAtlasProject(projectName)))
+		testProjectID, err := ch.ProjectID(ctx, projectName)
+		require.NoError(t, err)
+		as := audit.NewAuditLog(ch.AtlasClient().AuditingApi)
 
-	result, err := as.Get(ctx, testProjectID)
-	require.NoError(t, err)
-	assert.Equal(t, audit.NewAuditConfig(nil), result)
+		result, err := as.Get(ctx, testProjectID)
+		require.NoError(t, err)
+		assert.Equal(t, audit.NewAuditConfig(nil), result)
+	})
 }
 
 func TestSyncs(t *testing.T) {
+	ctx := context.Background()
 	testCases := []struct {
 		title    string
 		auditing *audit.AuditConfig
@@ -111,27 +88,22 @@ func TestSyncs(t *testing.T) {
 			),
 		},
 	}
-	testProjectID := mustReadProjectID("atlasprojects/my-project")
-	ctx := context.Background()
-	as := audit.NewAuditLog(contract.MustVersionedClient(t, ctx).AuditingApi)
+	contract.RunGoContractTest(ctx, t, "test syncs", func(ch contract.ContractHelper) {
+		projectName := utils.RandomName("audit-syncs-project")
+		require.NoError(t, ch.AddResources(ctx, 5*time.Minute, contract.DefaultAtlasProject(projectName)))
+		testProjectID, err := ch.ProjectID(ctx, projectName)
+		require.NoError(t, err)
+		as := audit.NewAuditLog(ch.AtlasClient().AuditingApi)
 
-	for _, tc := range testCases {
-		t.Run(tc.title, func(t *testing.T) {
-			err := as.Update(ctx, testProjectID, tc.auditing)
-			require.NoError(t, err)
+		for _, tc := range testCases {
+			t.Run(tc.title, func(t *testing.T) {
+				err := as.Update(ctx, testProjectID, tc.auditing)
+				require.NoError(t, err)
 
-			result, err := as.Get(ctx, testProjectID)
-			require.NoError(t, err)
-			assert.Equal(t, tc.auditing, result)
-		})
-	}
-}
-
-func mustReadProjectID(namespacedName string) string {
-	l := launcher.NewFromEnv(testVersion)
-	output, err := l.Kubectl("get", namespacedName, "-o=jsonpath={.status.id}")
-	if err != nil {
-		log.Fatalf("Failed to get test project id: %v", err)
-	}
-	return output
+				result, err := as.Get(ctx, testProjectID)
+				require.NoError(t, err)
+				assert.Equal(t, tc.auditing, result)
+			})
+		}
+	})
 }
